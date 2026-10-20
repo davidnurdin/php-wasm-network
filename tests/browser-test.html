@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>php-wasm-network browser test</title>
+<script src="../js/php-wasm-network.js"></script>
+<script>
+// window.runTests(serverUrl, transport) -> {passed, failed, log}: the JS side alone (no php-wasm engine)
+window.runTests = async function (url, transport) {
+	const N = PhpWasmNetwork, E = N.EVENTS, log = [];
+	let failed = 0;
+	const check = (ok, what) => { log.push((ok ? 'ok   ' : 'FAIL ') + what); if (!ok) failed++; };
+	const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+	const text = (d) => new TextDecoder().decode(d);
+	const conns = {};
+	const events = {};
+	const open = (name) => { conns[name] = N.connect(url, { transport }); events[name] = []; };
+	const pump = () => { for (const k in conns) for (const e of N.poll(conns[k])) events[k].push(e); };
+	const wait = async (pred, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { pump(); if (pred()) return true; await sleep(20); } return false; };
+	const of = (k, type) => events[k].filter((e) => e.type === type);
+
+	open('a'); open('b'); open('c');
+	check(await wait(() => ['a', 'b', 'c'].every((k) => of(k, E.OPEN).length)), 'three connections open');
+	N.control(conns.a, { t: 'create', max: 4, meta: { mode: 'race' } });
+	await wait(() => of('a', E.ROOM).length);
+	const room = JSON.parse(text(of('a', E.ROOM)[0].data));
+	check(room.room.length === 4 && room.peer === 0, 'room ' + room.room + ' created');
+	N.control(conns.b, { t: 'join', room: room.room });
+	await wait(() => of('b', E.ROOM).length);
+	N.control(conns.c, { t: 'join', room: room.room });
+	await wait(() => of('c', E.ROOM).length && of('a', E.PEER_JOIN).length === 2);
+	check(JSON.parse(text(of('c', E.ROOM)[0].data)).peers.join() === '0,1', 'c sees #0 and #1');
+
+	if (transport === 'webrtc') {
+		const direct = await wait(() => of('a', E.PEER_TRANSPORT).length >= 2 && of('b', E.PEER_TRANSPORT).length >= 2 && of('c', E.PEER_TRANSPORT).length >= 2, 10000);
+		check(direct, 'WebRTC DataChannels open between the 3 peers: ' + ['a', 'b', 'c'].map((k) => k + '=' + of(k, E.PEER_TRANSPORT).map((e) => e.from + ':' + text(e.data)).join(' ')).join(', '));
+	}
+	for (const k in events) events[k] = [];
+	N.send(conns.a, 'hello from a');
+	await wait(() => of('b', E.MESSAGE).length && of('c', E.MESSAGE).length);
+	check(of('b', E.MESSAGE)[0] && text(of('b', E.MESSAGE)[0].data) === 'hello from a' && of('b', E.MESSAGE)[0].from === 0, 'broadcast a -> b');
+	check(of('c', E.MESSAGE)[0] && text(of('c', E.MESSAGE)[0].data) === 'hello from a', 'broadcast a -> c');
+	N.send(conns.c, new Uint8Array([1, 2, 3, 255, 0]), 1, false);
+	await wait(() => of('b', E.MESSAGE).length >= 2, 3000);
+	const m = of('b', E.MESSAGE)[1];
+	check(m && m.from === 2 && m.data.join() === '1,2,3,255,0', 'unreliable direct c -> b (binary)');
+	check(of('a', E.MESSAGE).length === 0, 'a does not get it');
+	const n = 200;
+	for (let i = 0; i < n; i++) N.send(conns.b, new Uint8Array([i >> 8, i & 255]), 0, true);
+	await wait(() => of('a', E.MESSAGE).length >= n);
+	const got = of('a', E.MESSAGE).map((e) => (e.data[0] << 8) | e.data[1]);
+	check(got.length === n && got.every((v, i) => v === i), n + ' reliable messages in order b -> a');
+	N.control(conns.a, { t: 'ping', id: 1 });
+	await wait(() => of('a', E.PONG).length);
+	check(of('a', E.PONG).length === 1, 'ping ' + (of('a', E.PONG)[0] ? text(of('a', E.PONG)[0].data) : ''));
+	N.close(conns.a);
+	await wait(() => of('b', E.HOST).length && of('c', E.HOST).length);
+	check(of('b', E.PEER_LEAVE).some((e) => e.from === 0) && of('c', E.HOST)[0] && of('c', E.HOST)[0].from === 1, 'host left, #1 is the host');
+	for (const k in events) events[k] = [];
+	N.send(conns.b, 'after');
+	await wait(() => of('c', E.MESSAGE).length);
+	check(of('c', E.MESSAGE)[0] && text(of('c', E.MESSAGE)[0].data) === 'after', 'b -> c still works');
+	N.close(conns.b); N.close(conns.c);
+	return { failed, log };
+};
+</script>

@@ -1,0 +1,34 @@
+# Production: relay + Caddy (automatic HTTPS: wss://$DOMAIN/ws) + coturn (TURN for WebRTC behind strict NATs).
+#   cp .env.example .env   # DOMAIN, TURN_USER, TURN_PASSWORD, TURN_REALM
+#   docker compose up -d --build
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    expose: ["8090"]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [relay]
+
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    network_mode: host
+    command: >
+      -n --log-file=stdout --fingerprint --lt-cred-mech
+      --user=${TURN_USER}:${TURN_PASSWORD} --realm=${TURN_REALM}
+      --listening-port=3478 --min-port=49160 --max-port=49200
+      --no-cli --no-tls --no-dtls
+
+volumes:
+  caddy_data:

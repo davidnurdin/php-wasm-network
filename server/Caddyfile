@@ -1,0 +1,6 @@
+{$DOMAIN} {
+	# WebSocket of the relay (the game connects to wss://DOMAIN/ws), and its health check
+	reverse_proxy /ws* relay:8090
+	reverse_proxy /health relay:8090
+	respond "php-wasm-network relay" 200
+}
