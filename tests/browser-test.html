@@ -4,7 +4,7 @@
 <script src="../js/php-wasm-network.js"></script>
 <script>
 // window.runTests(serverUrl, transport) -> {passed, failed, log}: the JS side alone (no php-wasm engine)
-window.runTests = async function (url, transport) {
+window.runTests = async function (url, transport, policy) {
 	const N = PhpWasmNetwork, E = N.EVENTS, log = [];
 	let failed = 0;
 	const check = (ok, what) => { log.push((ok ? 'ok   ' : 'FAIL ') + what); if (!ok) failed++; };
@@ -12,7 +12,7 @@ window.runTests = async function (url, transport) {
 	const text = (d) => new TextDecoder().decode(d);
 	const conns = {};
 	const events = {};
-	const open = (name) => { conns[name] = N.connect(url, { transport }); events[name] = []; };
+	const open = (name) => { conns[name] = N.connect(url, policy ? { transport, iceTransportPolicy: policy } : { transport }); events[name] = []; };
 	const pump = () => { for (const k in conns) for (const e of N.poll(conns[k])) events[k].push(e); };
 	const wait = async (pred, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { pump(); if (pred()) return true; await sleep(20); } return false; };
 	const of = (k, type) => events[k].filter((e) => e.type === type);
@@ -31,6 +31,7 @@ window.runTests = async function (url, transport) {
 
 	if (transport === 'webrtc') {
 		const direct = await wait(() => of('a', E.PEER_TRANSPORT).length >= 2 && of('b', E.PEER_TRANSPORT).length >= 2 && of('c', E.PEER_TRANSPORT).length >= 2, 10000);
+		for (const k of ['a', 'b', 'c']) log.push('     paths of ' + k + ': ' + JSON.stringify(await N.stats(conns[k])));
 		check(direct, 'WebRTC DataChannels open between the 3 peers: ' + ['a', 'b', 'c'].map((k) => k + '=' + of(k, E.PEER_TRANSPORT).map((e) => e.from + ':' + text(e.data)).join(' ')).join(', '));
 	}
 	for (const k in events) events[k] = [];

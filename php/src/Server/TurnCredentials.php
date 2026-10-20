@@ -4,7 +4,7 @@ namespace PhpWasmNetwork\Server;
 
 /**
  * Short-lived TURN credentials (the "TURN REST API" of coturn --use-auth-secret --static-auth-secret=...):
- * username = "<expiry timestamp>:<name>", credential = base64(HMAC-SHA1(secret, username)). The secret stays on
+ * username = "<expiry timestamp>:<name>-<random>", credential = base64(HMAC-SHA1(secret, username)). The secret stays on
  * the server; a credential read in a page only works for $ttl seconds.
  */
 final class TurnCredentials
@@ -37,7 +37,8 @@ final class TurnCredentials
         $servers = [];
         if ($this->stunUrls) $servers[] = ['urls' => $this->stunUrls];
         if ($this->turnUrls) {
-            $username = (time() + $this->ttl) . ':' . $this->name;
+            // one user per client: coturn's --user-quota counts the allocations of a username
+            $username = (time() + $this->ttl) . ':' . $this->name . '-' . bin2hex(random_bytes(4));
             $servers[] = ['urls' => $this->turnUrls, 'username' => $username,
                 'credential' => base64_encode(hash_hmac('sha1', $username, $this->secret, true))];
         }

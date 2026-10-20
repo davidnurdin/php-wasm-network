@@ -1,6 +1,13 @@
 {$DOMAIN} {
 	# WebSocket of the relay (the game connects to wss://DOMAIN/ws), and its health check
-	reverse_proxy /ws* relay:8090
-	reverse_proxy /health relay:8090
-	respond "php-wasm-network relay" 200
+	# (handle blocks: otherwise "respond" would run before "reverse_proxy", in Caddy's directive order)
+	handle /ws* {
+		reverse_proxy relay:8090
+	}
+	handle /health {
+		reverse_proxy relay:8090
+	}
+	handle {
+		respond "php-wasm-network relay" 200
+	}
 }
