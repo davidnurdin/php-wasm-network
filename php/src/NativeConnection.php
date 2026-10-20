@@ -53,9 +53,19 @@ final class NativeConnection implements Connection
         $this->flush();
     }
 
-    public function createRoom(int $maxPeers = 8, array $meta = []): void
+    public function createRoom(int $maxPeers = 8, array $meta = [], bool $public = false): void
     {
-        $this->control(['t' => 'create', 'max' => $maxPeers, 'meta' => $meta ?: new \stdClass()]);
+        $this->control(['t' => 'create', 'max' => $maxPeers, 'meta' => $meta ?: new \stdClass(), 'public' => $public]);
+    }
+
+    public function quickJoin(int $maxPeers = 8, array $meta = []): void
+    {
+        $this->control(['t' => 'quick', 'max' => $maxPeers, 'meta' => $meta ?: new \stdClass()]);
+    }
+
+    public function lockRoom(bool $locked): void
+    {
+        $this->control(['t' => 'lock', 'locked' => $locked]);
     }
 
     public function joinRoom(string $code): void

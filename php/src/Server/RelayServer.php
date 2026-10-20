@@ -18,7 +18,10 @@ final class RelayServer
     private array $sockets = [];
     /** @var array<int, array> client state by socket id: buffer, frames, open, room, peer, out, seen */
     private array $clients = [];
-    /** @var array<string, array{max: int, meta: array, host: int, peers: array<int, int>}> code => room (peer id => socket id) */
+    /**
+     * @var array<string, array{max: int, meta: array, public: bool, locked: bool, host: int, peers: array<int, int>}>
+     *      code => room (peer id => socket id)
+     */
     private array $rooms = [];
     private $server;
     private bool $running = true;
@@ -75,8 +78,14 @@ final class RelayServer
         foreach ($read as $key => $socket) {
             if ($socket === $this->server) {
                 $this->accept();
-            } else {
+                continue;
+            }
+            try {
                 $this->read((int)$key);
+            } catch (\Throwable $e) {
+                // one client's bug never stops the server (and the other rooms)
+                $this->log("#$key: " . get_class($e) . ': ' . $e->getMessage() . ' at ' . basename($e->getFile()) . ':' . $e->getLine());
+                $this->drop((int)$key);
             }
         }
         foreach ($write as $key => $socket) {
@@ -139,7 +148,8 @@ final class RelayServer
         $key = $headers['sec-websocket-key'] ?? '';
         if (!str_starts_with($lines[0], 'GET ') || $key === '' || stripos($headers['upgrade'] ?? '', 'websocket') === false) {
             // plain HTTP: a health check
-            $body = json_encode(['ok' => true, 'rooms' => count($this->rooms), 'clients' => count($this->clients)]);
+            $body = json_encode(['ok' => true, 'rooms' => count($this->rooms),
+                'public' => count(array_filter($this->rooms, fn(array $room) => $room['public'])), 'clients' => count($this->clients)]);
             $this->clients[$id]['out'] = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n"
                 . "Content-Length: " . strlen($body) . "\r\nConnection: close\r\n\r\n" . $body;
             $this->flush($id);
@@ -184,14 +194,29 @@ final class RelayServer
         }
         switch ($message['t']) {
             case 'create':
+                $this->create($id, $message, !empty($message['public']));
+                break;
+            case 'quick':
+                // a public room with the same meta and a free place (the fullest one), or a new one
+                $meta = self::meta($message);
+                $best = null;
+                foreach ($this->rooms as $code => $room) {
+                    if (!$room['public'] || $room['locked'] || $room['meta'] !== $meta || count($room['peers']) >= $room['max']) continue;
+                    if ($best === null || count($room['peers']) > count($this->rooms[$best]['peers'])) $best = $code;
+                }
+                if ($best === null || $this->clients[$id]['room'] === $best) {
+                    $this->create($id, $message, true);
+                    break;
+                }
                 $this->leave($id);
-                $code = $this->newCode();
-                $max = max(2, min(Protocol::MAX_PEERS, (int)($message['max'] ?? 8)));
-                $meta = is_array($message['meta'] ?? null) ? $message['meta'] : [];
-                if (strlen(json_encode($meta)) > 4096) $meta = [];
-                $this->rooms[$code] = ['max' => $max, 'meta' => $meta, 'host' => 0, 'peers' => []];
-                $this->enter($id, $code);
-                $this->log("#$id created $code");
+                $this->enter($id, $best);
+                break;
+            case 'lock':
+                // the host: no more players from "quick" (a match started), or again
+                $code = $this->clients[$id]['room'];
+                if ($code !== null && $this->rooms[$code]['host'] === $this->clients[$id]['peer']) {
+                    $this->rooms[$code]['locked'] = !empty($message['locked']);
+                }
                 break;
             case 'join':
                 $code = strtoupper(trim((string)($message['room'] ?? '')));
@@ -223,6 +248,23 @@ final class RelayServer
         }
     }
 
+    private function create(int $id, array $message, bool $public): void
+    {
+        $this->leave($id);
+        $code = $this->newCode();
+        $max = max(2, min(Protocol::MAX_PEERS, (int)($message['max'] ?? 8)));
+        $this->rooms[$code] = ['max' => $max, 'meta' => self::meta($message), 'public' => $public, 'locked' => false,
+            'host' => 0, 'peers' => []];
+        $this->enter($id, $code);
+        $this->log("#$id created $code" . ($public ? ' (public)' : ''));
+    }
+
+    private static function meta(array $message): array
+    {
+        $meta = is_array($message['meta'] ?? null) ? $message['meta'] : [];
+        return strlen(json_encode($meta)) > 4096 ? [] : $meta;
+    }
+
     /** Binary frame [to] payload -> [from] payload to one peer or to every other peer of the room. */
     private function relay(int $id, string $frame): void
     {
@@ -246,7 +288,7 @@ final class RelayServer
         $this->clients[$id]['room'] = $code;
         $this->clients[$id]['peer'] = $peer;
         $this->sendJson($id, ['t' => 'room', 'room' => $code, 'peer' => $peer, 'host' => $room['host'],
-            'peers' => $others, 'meta' => $room['meta'], 'max' => $room['max']]);
+            'peers' => $others, 'meta' => $room['meta'], 'max' => $room['max'], 'public' => $room['public']]);
         foreach ($others as $other) $this->sendJson($room['peers'][$other], ['t' => 'peer-join', 'peer' => $peer]);
     }
 
@@ -255,19 +297,24 @@ final class RelayServer
         $code = $this->clients[$id]['room'] ?? null;
         if ($code === null || !isset($this->rooms[$code])) return;
         $peer = $this->clients[$id]['peer'];
-        $room = &$this->rooms[$code];
-        unset($room['peers'][$peer]);
+        unset($this->rooms[$code]['peers'][$peer]);
         $this->clients[$id]['room'] = null;
         $this->clients[$id]['peer'] = -1;
-        if (!$room['peers']) {
+        $peers = $this->rooms[$code]['peers'];
+        if (!$peers) {
             unset($this->rooms[$code]);
             $this->log("room $code closed");
             return;
         }
-        foreach ($room['peers'] as $target) $this->sendJson($target, ['t' => 'peer-leave', 'peer' => $peer]);
-        if ($room['host'] === $peer) {
-            $room['host'] = min(array_keys($room['peers']));
-            foreach ($room['peers'] as $target) $this->sendJson($target, ['t' => 'host', 'peer' => $room['host']]);
+        // the new host is chosen before telling anybody: a write that fails drops that peer, which leaves too
+        // (and may empty the room) while we are still in this loop
+        $hostLeft = $this->rooms[$code]['host'] === $peer;
+        if ($hostLeft) $this->rooms[$code]['host'] = min(array_keys($peers));
+        foreach ($peers as $target) $this->sendJson($target, ['t' => 'peer-leave', 'peer' => $peer]);
+        if ($hostLeft && isset($this->rooms[$code])) {
+            foreach ($this->rooms[$code]['peers'] as $target) {
+                if (isset($this->rooms[$code])) $this->sendJson($target, ['t' => 'host', 'peer' => $this->rooms[$code]['host']]);
+            }
         }
     }
 

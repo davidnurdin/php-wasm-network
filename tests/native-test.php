@@ -89,6 +89,33 @@ check((of($ev['c'], Event::ROOM)[0] ?? null)?->info()['peer'] === 0, 're-join ta
 $health = @file_get_contents("http://127.0.0.1:$port/health");
 check(($health = json_decode((string)$health, true))['ok'] ?? false, 'HTTP health check: ' . json_encode($health));
 
+// public rooms: quick joins the fullest open one with the same meta, or creates one; a locked one is skipped
+$p1 = new NativeConnection($url); $p2 = new NativeConnection($url); $p3 = new NativeConnection($url); $p4 = new NativeConnection($url);
+$all = compact('p1', 'p2', 'p3', 'p4');
+pump($all, fn($ev) => count(array_filter($ev, fn($e) => of($e, Event::OPEN))) === 4);
+$p1->quickJoin(3, ['game' => 'x']);
+$r1 = of(pump(['p1' => $p1], fn($ev) => of($ev['p1'], Event::ROOM))['p1'], Event::ROOM)[0]->info();
+check($r1['public'] === true && $r1['peer'] === 0, "quick with no public room: creates {$r1['room']}, public");
+$p2->quickJoin(3, ['game' => 'y']);
+$r2 = of(pump(['p2' => $p2], fn($ev) => of($ev['p2'], Event::ROOM))['p2'], Event::ROOM)[0]->info();
+check($r2['room'] !== $r1['room'], 'quick with another meta: another room');
+$a->createRoom(3, ['game' => 'x']);   // private: never joined by quick
+pump(['a' => $a], fn($ev) => of($ev['a'], Event::ROOM));
+$p3->quickJoin(3, ['game' => 'x']);
+$r3 = of(pump(['p3' => $p3], fn($ev) => of($ev['p3'], Event::ROOM))['p3'], Event::ROOM)[0]->info();
+check($r3['room'] === $r1['room'] && $r3['peer'] === 1, 'quick joins the public room with the same meta');
+$p3->lockRoom(true);   // not the host: ignored
+$p1->lockRoom(true);
+usleep(100000);
+$p4->quickJoin(3, ['game' => 'x']);
+$r4 = of(pump(['p4' => $p4], fn($ev) => of($ev['p4'], Event::ROOM))['p4'], Event::ROOM)[0]->info();
+check($r4['room'] !== $r1['room'], 'a locked room is skipped by quick');
+$p1->lockRoom(false);
+$p2->quickJoin(3, ['game' => 'x']);
+$r5 = of(pump(['p2' => $p2], fn($ev) => of($ev['p2'], Event::ROOM))['p2'], Event::ROOM)[0]->info();
+check($r5['room'] === $r1['room'], 'unlocked: the fullest public room is joined first');
+foreach ($all as $conn) $conn->close();
+
 $b->close(); $c->close(); $d->close();
 proc_terminate($server);
 echo $failures ? "$failures FAILED\n" : "all passed\n";

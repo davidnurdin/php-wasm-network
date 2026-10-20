@@ -65,7 +65,9 @@ $net->ping();                          // Event::PONG ['ms' => ...]
 | Méthode | |
 |---|---|
 | `Network::connect(string $url, array $options)` | `transport` : `ws` ou `webrtc` ; `iceServers` : serveurs STUN/TURN ; `timeout` (natif) |
-| `createRoom(int $max = 8, array $meta = [])` | crée un salon (code à 4 lettres) ; `$meta` est envoyé à ceux qui le rejoignent |
+| `createRoom(int $max = 8, array $meta = [], bool $public = false)` | crée un salon (code à 4 lettres) ; `$meta` est envoyé à ceux qui le rejoignent ; `$public` : `quickJoin()` peut y amener des inconnus |
+| `quickJoin(int $max = 8, array $meta = [])` | salon public : rejoint celui qui a le même `$meta`, une place libre et le plus de joueurs, sinon en crée un |
+| `lockRoom(bool $locked)` | l'hôte : plus personne n'arrive par `quickJoin()` (une partie est en cours) ; le code marche toujours |
 | `joinRoom(string $code)` / `leaveRoom()` | |
 | `send(string $data, ?int $to = null, bool $reliable = true)` | 64 Ko au plus par message |
 | `poll(): Event[]` | à appeler à chaque frame |
@@ -98,14 +100,14 @@ docker compose up -d --build         # wss://DOMAIN/ws ; turn:DOMAIN:3478
 ```
 
 - Ports à ouvrir : 80 et 443 (Caddy), 3478 en UDP et TCP, et 49160 à 49200 en UDP (TURN).
-- `GET /health` renvoie le nombre de salons et de clients.
+- `GET /health` renvoie le nombre de salons (dont publics) et de clients.
 
 ## Protocole
 
 Sur un seul WebSocket (détail dans `php/src/Protocol.php`) :
 
-- **trames texte** : contrôle en JSON (`create`, `join`, `leave`, `signal`, `ping` ; réponses `room`,
-  `peer-join`, `peer-leave`, `host`, `signal`, `pong`, `error`) ;
+- **trames texte** : contrôle en JSON (`create`, `join`, `quick`, `lock`, `leave`, `signal`, `ping` ;
+  réponses `room`, `peer-join`, `peer-leave`, `host`, `signal`, `pong`, `error`) ;
 - **trames binaires** : messages relayés, `[destinataire u8 | 255 = tous] données`, reçus sous la forme
   `[émetteur u8] données`.
 

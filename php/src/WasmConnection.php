@@ -29,9 +29,19 @@ final class WasmConnection implements Connection
         return function_exists('wasmnet_connect');
     }
 
-    public function createRoom(int $maxPeers = 8, array $meta = []): void
+    public function createRoom(int $maxPeers = 8, array $meta = [], bool $public = false): void
     {
-        \wasmnet_control($this->handle, json_encode(['t' => 'create', 'max' => $maxPeers, 'meta' => $meta ?: new \stdClass()]));
+        \wasmnet_control($this->handle, json_encode(['t' => 'create', 'max' => $maxPeers, 'meta' => $meta ?: new \stdClass(), 'public' => $public]));
+    }
+
+    public function quickJoin(int $maxPeers = 8, array $meta = []): void
+    {
+        \wasmnet_control($this->handle, json_encode(['t' => 'quick', 'max' => $maxPeers, 'meta' => $meta ?: new \stdClass()]));
+    }
+
+    public function lockRoom(bool $locked): void
+    {
+        \wasmnet_control($this->handle, json_encode(['t' => 'lock', 'locked' => $locked]));
     }
 
     public function joinRoom(string $code): void

@@ -6,12 +6,16 @@ namespace PhpWasmNetwork;
  * The protocol between the clients and the relay server (php/src/Server/RelayServer.php), over one WebSocket:
  *
  * - text frames: JSON control messages, {"t": type, ...}
- *     client -> server: create {max, meta}, join {room}, leave, signal {to, data}, ping {id}
- *     server -> client: hello {v}, room {room, peer, host, peers, meta}, peer-join {peer}, peer-leave {peer},
+ *     client -> server: create {max, meta, public}, join {room}, quick {max, meta}, lock {locked}, leave,
+ *                       signal {to, data}, ping {id}
+ *     server -> client: hello {v}, room {room, peer, host, peers, meta, max, public}, peer-join {peer}, peer-leave {peer},
  *                       host {peer}, signal {from, data}, pong {id}, error {code, message}
  * - binary frames: messages relayed by the server inside the room
  *     client -> server: [to: uint8 (BROADCAST: everybody else)] payload
  *     server -> client: [from: uint8] payload
+ *
+ * Public rooms (create with public: true, or quick): "quick" joins the public room with the same meta that has the
+ * most players and a free place, unless its host locked it (a match is being played), or creates one.
  *
  * WebRTC (browser only): the peers of a room exchange their offers / answers / ICE candidates through
  * "signal", then talk directly over two DataChannels (reliable + ordered, unreliable + unordered). The relay

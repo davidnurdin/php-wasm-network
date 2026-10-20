@@ -16,8 +16,17 @@ interface Connection
     public const CLOSING = 2;
     public const CLOSED = 3;
 
-    /** Creates a room (Event::ROOM with its code once done). $meta: anything the others see when joining. */
-    public function createRoom(int $maxPeers = 8, array $meta = []): void;
+    /**
+     * Creates a room (Event::ROOM with its code once done). $meta: anything the others see when joining.
+     * $public: quickJoin() can put strangers in it.
+     */
+    public function createRoom(int $maxPeers = 8, array $meta = [], bool $public = false): void;
+
+    /** Joins a public room with the same $meta and a free place, or creates one (Event::ROOM). */
+    public function quickJoin(int $maxPeers = 8, array $meta = []): void;
+
+    /** The host: $locked true, quickJoin() doesn't bring anybody in any more (joinRoom() with the code still does). */
+    public function lockRoom(bool $locked): void;
 
     /** Joins the room $code (Event::ROOM, or Event::ERROR no-room / room-full). */
     public function joinRoom(string $code): void;
