@@ -15,7 +15,11 @@ if (is_file($autoload)) {
 }
 
 $address = $argv[1] ?? getenv('PHP_WASM_NETWORK_LISTEN') ?: 'tcp://0.0.0.0:8090';
-$server = new PhpWasmNetwork\Server\RelayServer($address, fn(string $line) => fwrite(STDERR, $line . "\n"));
+// TURN (coturn --use-auth-secret): TURN_SECRET, TURN_URLS, STUN_URLS -> sent to the browsers in "hello"
+$turn = PhpWasmNetwork\Server\TurnCredentials::fromEnv();
+$server = new PhpWasmNetwork\Server\RelayServer($address, fn(string $line) => fwrite(STDERR, $line . "\n"),
+    iceServers: $turn ? fn() => $turn->iceServers() : null);
+if ($turn) fwrite(STDERR, "TURN credentials enabled\n");
 if (function_exists('pcntl_signal')) {
     pcntl_async_signals(true);
     pcntl_signal(SIGTERM, fn() => $server->stop());

@@ -23,12 +23,17 @@ final class RelayServer
     private $server;
     private bool $running = true;
 
-    /** @param callable(string): void|null $log */
+    /**
+     * @param callable(string): void|null $log
+     * @param \Closure(): array|null $iceServers RTCIceServer[] sent to each client in "hello" (STUN / TURN with
+     *        short-lived credentials: Server\TurnCredentials)
+     */
     public function __construct(
         private string $address = 'tcp://0.0.0.0:8090',
         private $log = null,
         private int $maxClients = 2000,
         private float $idleTimeout = 60.0,
+        private ?\Closure $iceServers = null,
     ) {
     }
 
@@ -144,7 +149,9 @@ final class RelayServer
         $this->clients[$id]['open'] = true;
         $this->clients[$id]['out'] .= "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
             . "Sec-WebSocket-Accept: " . Frames::accept($key) . "\r\n\r\n";
-        $this->sendJson($id, ['t' => 'hello', 'v' => Protocol::VERSION]);
+        $hello = ['t' => 'hello', 'v' => Protocol::VERSION];
+        if ($this->iceServers !== null) $hello['ice'] = ($this->iceServers)();
+        $this->sendJson($id, $hello);
     }
 
     private function frames(int $id, string $data): void

@@ -78,6 +78,10 @@
 			let m;
 			try { m = JSON.parse(json); } catch (e) { return; }
 			switch (m.t) {
+				case 'hello':
+					// STUN / TURN of the server (short-lived credentials), unless the page chose its own
+					if (Array.isArray(m.ice) && m.ice.length && !this.options.iceServers) this.iceServers = DEFAULT_ICE.concat(m.ice);
+					break;
 				case 'room':
 					this.me = m.peer;
 					this.members = new Set(m.peers);
