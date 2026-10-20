@@ -1,6 +1,8 @@
-# Production: relay + Caddy (automatic HTTPS: wss://$DOMAIN/ws) + coturn (TURN for WebRTC behind strict NATs).
-#   cp .env.example .env   # DOMAIN, TURN_USER, TURN_PASSWORD, TURN_REALM
+# Production on a machine of its own (ports 80 and 443 free): relay + Caddy (automatic HTTPS: wss://$DOMAIN/ws)
+# + coturn (STUN / TURN for WebRTC behind strict NATs, short-lived credentials given by the relay).
+#   cp .env.example .env && sed -i "s/^TURN_SECRET=.*/TURN_SECRET=$(openssl rand -hex 32)/" .env
 #   docker compose up -d --build
+# Behind a Traefik already serving 80/443: deploy-traefik/.
 services:
   relay:
     build:
@@ -8,9 +10,13 @@ services:
       dockerfile: server/Dockerfile
     restart: unless-stopped
     expose: ["8090"]
+    environment:
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_URLS: turn:${DOMAIN}:${TURN_PORT}?transport=udp,turn:${DOMAIN}:${TURN_PORT}?transport=tcp
+      STUN_URLS: stun:${DOMAIN}:${TURN_PORT}
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.8-alpine
     restart: unless-stopped
     ports: ["80:80", "443:443"]
     environment:
@@ -21,14 +27,21 @@ services:
     depends_on: [relay]
 
   coturn:
-    image: coturn/coturn:4.6
+    image: coturn/coturn:4.6.2
     restart: unless-stopped
     network_mode: host
+    # no relay to private addresses: a TURN client can't reach the services of the machine
     command: >
-      -n --log-file=stdout --fingerprint --lt-cred-mech
-      --user=${TURN_USER}:${TURN_PASSWORD} --realm=${TURN_REALM}
-      --listening-port=3478 --min-port=49160 --max-port=49200
-      --no-cli --no-tls --no-dtls
+      -n --log-file=stdout --no-cli --fingerprint --no-multicast-peers
+      --external-ip=${PUBLIC_IP}
+      --listening-port=${TURN_PORT} --min-port=${TURN_MIN_PORT} --max-port=${TURN_MAX_PORT}
+      --no-tls --no-dtls
+      --realm=${DOMAIN} --use-auth-secret --static-auth-secret=${TURN_SECRET}
+      --total-quota=100 --user-quota=12
+      --denied-peer-ip=0.0.0.0-0.255.255.255 --denied-peer-ip=10.0.0.0-10.255.255.255
+      --denied-peer-ip=100.64.0.0-100.127.255.255 --denied-peer-ip=127.0.0.0-127.255.255.255
+      --denied-peer-ip=169.254.0.0-169.254.255.255 --denied-peer-ip=172.16.0.0-172.31.255.255
+      --denied-peer-ip=192.168.0.0-192.168.255.255
 
 volumes:
   caddy_data:

@@ -8,6 +8,9 @@ relais et signalisation WebRTC.
 Écrit pour le multijoueur en ligne de [Sonic PHP](https://github.com/davidnurdin/sonicGamePhp), mais
 utilisable par n'importe quelle application PHP.
 
+**Pour comprendre comment tout fonctionne** (WebSocket, WebRTC, STUN / TURN, client, serveur, déploiement,
+protocole, exemples PHP) : [**le guide**](doc/guide.md).
+
 ```
  PHP (jeu)  ──  PhpWasmNetwork\Network::connect()
                   │
@@ -92,14 +95,16 @@ php server/bin/server.php tcp://0.0.0.0:8090        # développement : ws://loca
 ```
 
 En production (`wss://` est obligatoire depuis une page HTTPS), avec Caddy pour le certificat et coturn
-pour TURN :
+pour TURN (identifiants temporaires donnés par le relais, secret partagé) :
 
 ```bash
-cd server && cp .env.example .env    # DOMAIN, TURN_USER, TURN_PASSWORD, TURN_REALM
+cd server && cp .env.example .env    # DOMAIN, PUBLIC_IP, TURN_SECRET (openssl rand -hex 32)
 docker compose up -d --build         # wss://DOMAIN/ws ; turn:DOMAIN:3478
 ```
 
-- Ports à ouvrir : 80 et 443 (Caddy), 3478 en UDP et TCP, et 49160 à 49200 en UDP (TURN).
+Derrière un Traefik qui occupe déjà 80/443 : `server/deploy-traefik/` (la configuration de production de
+Sonic PHP, `wss://sonic.mimichat.fr/ws`).
+
 - `GET /health` renvoie le nombre de salons (dont publics) et de clients.
 
 ## Protocole
