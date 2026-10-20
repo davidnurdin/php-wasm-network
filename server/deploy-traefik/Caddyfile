@@ -1,13 +1,55 @@
-{$DOMAIN}, {$DOMAIN_ALIAS} {
+{
+	# Traefik passe le TLS tel quel : Caddy voit l'adresse de Traefik. Derrière le proxy Cloudflare, l'adresse du
+	# visiteur est dans CF-Connecting-IP (sinon dans X-Forwarded-For, ou celle de Traefik) : crue depuis les
+	# réseaux privés, donc depuis Traefik
+	servers {
+		trusted_proxies static private_ranges
+		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
+	# la redirection vers https est faite plus bas : Cloudflare en mode « Flexible » arrive en http (port 80) pour
+	# une page demandée en https, une redirection automatique tournerait en boucle
+	auto_https disable_redirects
+}
+
+(relay) {
 	# le jeu se connecte à wss://DOMAIN/ws ; /health : salons et clients
-	# (handle : sinon "respond" passerait avant "reverse_proxy", dans l'ordre des directives de Caddy)
+	# (handle : sinon un autre handler passerait avant "reverse_proxy", dans l'ordre des directives de Caddy)
 	handle /ws* {
 		reverse_proxy relay:8090
 	}
 	handle /health {
 		reverse_proxy relay:8090
 	}
+}
+
+(https) {
+	# demandé en http : vers https. Cloudflare dit dans CF-Visitor si le visiteur, lui, est en https (Traefik
+	# récrit X-Forwarded-Proto sur le port 80, pas CF-Visitor)
+	@plain {
+		protocol http
+		not header CF-Visitor *https*
+	}
+	redir @plain https://{host}{uri} 308
+}
+
+{$DOMAIN}, http://{$DOMAIN} {
+	import https
+	import relay
+	# le reste : le site (Symfony, et son hub Mercure sur /.well-known/mercure), avec l'adresse du visiteur
 	handle {
-		respond "php-wasm-network relay (Sonic PHP)" 200
+		reverse_proxy site:8080 {
+			header_up X-Forwarded-For {client_ip}
+			# ici, toujours une page demandée en https
+			header_up X-Forwarded-Proto https
+		}
+	}
+}
+
+{$DOMAIN_ALIAS}, http://{$DOMAIN_ALIAS} {
+	# ancien nom : le relais pour les jeux qui l'utilisent encore, le site sous son vrai nom
+	import https
+	import relay
+	handle {
+		redir https://{$DOMAIN}{uri} 301
 	}
 }

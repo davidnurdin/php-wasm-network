@@ -1,11 +1,16 @@
 # Serveur du multijoueur en ligne de Sonic PHP (https://davidnurdin.github.io/php-wasm-sdl/) :
 #   relay  : salons / relais / signalisation WebRTC (php-wasm-network, PHP pur)      -> wss://${DOMAIN}/ws
-#   caddy  : TLS (certificat Let's Encrypt de ${DOMAIN}) devant le relay ; Traefik lui passe le TLS tel quel
-#            (routeur TCP HostSNI + passthrough) et le port 80 (challenge ACME) : la config Traefik n'est pas touchée
+#   caddy  : TLS (certificat Let's Encrypt de ${DOMAIN}) devant le relay et le site ; Traefik lui passe le TLS
+#            tel quel (routeur TCP HostSNI + passthrough) et le port 80 (challenge ACME) : la config Traefik n'est
+#            pas touchée. ${DOMAIN} peut passer par le proxy Cloudflare (l'adresse du visiteur : CF-Connecting-IP)
 #   coturn : STUN / TURN pour WebRTC derrière les NAT stricts (identifiants temporaires donnés par le relay)
 #            ports à part de celui de chat.mimichat.fr : 3480 (udp/tcp), relais 49300-49340/udp
+#   site   : le site https://${DOMAIN}/ (Symfony + FrankenPHP, sonicGameSite) : inscription, bouton JOUER, hub
+#            Mercure des visiteurs en direct ; derrière caddy
+#   db     : MariaDB du site (réseau à part, seul le site y accède)
 #
-#   docker compose up -d --build        (./update.sh : nouvelle version de php-wasm-network)
+#   docker compose up -d --build        (./update.sh : nouvelle version de php-wasm-network ;
+#                                        ./update-site.sh : nouvelle version du site)
 name: sonicgameserverphp
 
 networks:
@@ -13,10 +18,13 @@ networks:
     name: traefik_web
     external: true
   internal:
+  sitedb:
 
 volumes:
   caddy_data:
   caddy_config:
+  site_db:
+  site_data:
 
 services:
   relay:
@@ -26,8 +34,9 @@ services:
     restart: unless-stopped
     environment:
       TURN_SECRET: ${TURN_SECRET}
-      TURN_URLS: turn:${DOMAIN}:${TURN_PORT}?transport=udp,turn:${DOMAIN}:${TURN_PORT}?transport=tcp
-      STUN_URLS: stun:${DOMAIN}:${TURN_PORT}
+      # TURN_HOST : un nom qui mène directement à la machine (pas par le proxy Cloudflare, qui ne passe que le web)
+      TURN_URLS: turn:${TURN_HOST}:${TURN_PORT}?transport=udp,turn:${TURN_HOST}:${TURN_PORT}?transport=tcp
+      STUN_URLS: stun:${TURN_HOST}:${TURN_PORT}
     networks:
       - internal
     logging:
@@ -48,6 +57,7 @@ services:
       - web
     depends_on:
       - relay
+      - site
     logging:
       options: { max-size: "10m", max-file: "3" }
     labels:
@@ -64,6 +74,55 @@ services:
       - traefik.tcp.routers.sonicnet-tls.tls.passthrough=true
       - traefik.tcp.routers.sonicnet-tls.service=sonicnet-tls
       - traefik.tcp.services.sonicnet-tls.loadbalancer.server.port=443
+
+  site:
+    build: ./sonicGameSite
+    restart: unless-stopped
+    environment:
+      APP_SECRET: ${SITE_APP_SECRET}
+      DATABASE_URL: mysql://sonic:${SITE_DB_PASSWORD}@db:3306/sonic?serverVersion=11.4.13-MariaDB&charset=utf8mb4
+      GAME_URL: https://davidnurdin.github.io/php-wasm-sdl/
+      RELAY_HEALTH_URL: http://relay:8090/health
+      # seul caddy (réseau interne) parle au site : il donne l'adresse du visiteur dans X-Forwarded-For
+      TRUSTED_PROXIES: PRIVATE_SUBNETS
+      MERCURE_URL: http://localhost:8080/.well-known/mercure
+      MERCURE_PUBLIC_URL: https://${DOMAIN}/.well-known/mercure
+      MERCURE_COOKIE_NAME: __Secure-mercure_access_token
+      MERCURE_JWT_SECRET: ${SITE_MERCURE_SECRET}
+      MERCURE_JWT_ISSUER: https://${DOMAIN}
+    volumes:
+      - site_data:/data
+    networks:
+      - internal
+      - sitedb
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      options: { max-size: "10m", max-file: "3" }
+
+  db:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: sonic
+      MARIADB_USER: sonic
+      MARIADB_PASSWORD: ${SITE_DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${SITE_DB_ROOT_PASSWORD}
+      MARIADB_AUTO_UPGRADE: "1"
+    # petite base : peu de mémoire
+    command: --innodb-buffer-pool-size=64M --max-connections=40 --performance-schema=OFF
+    volumes:
+      - site_db:/var/lib/mysql
+    networks:
+      - sitedb
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      options: { max-size: "10m", max-file: "3" }
 
   coturn:
     image: coturn/coturn:4.6.2
