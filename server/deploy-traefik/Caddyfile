@@ -1,0 +1,13 @@
+{$DOMAIN}, {$DOMAIN_ALIAS} {
+	# le jeu se connecte à wss://DOMAIN/ws ; /health : salons et clients
+	# (handle : sinon "respond" passerait avant "reverse_proxy", dans l'ordre des directives de Caddy)
+	handle /ws* {
+		reverse_proxy relay:8090
+	}
+	handle /health {
+		reverse_proxy relay:8090
+	}
+	handle {
+		respond "php-wasm-network relay (Sonic PHP)" 200
+	}
+}

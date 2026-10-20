@@ -1,0 +1,85 @@
+# Serveur du multijoueur en ligne de Sonic PHP (https://davidnurdin.github.io/php-wasm-sdl/) :
+#   relay  : salons / relais / signalisation WebRTC (php-wasm-network, PHP pur)      -> wss://${DOMAIN}/ws
+#   caddy  : TLS (certificat Let's Encrypt de ${DOMAIN}) devant le relay ; Traefik lui passe le TLS tel quel
+#            (routeur TCP HostSNI + passthrough) et le port 80 (challenge ACME) : la config Traefik n'est pas touchée
+#   coturn : STUN / TURN pour WebRTC derrière les NAT stricts (identifiants temporaires donnés par le relay)
+#            ports à part de celui de chat.mimichat.fr : 3480 (udp/tcp), relais 49300-49340/udp
+#
+#   docker compose up -d --build        (./update.sh : nouvelle version de php-wasm-network)
+name: sonicgameserverphp
+
+networks:
+  web:
+    name: traefik_web
+    external: true
+  internal:
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+services:
+  relay:
+    build:
+      context: ./php-wasm-network
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_URLS: turn:${DOMAIN}:${TURN_PORT}?transport=udp,turn:${DOMAIN}:${TURN_PORT}?transport=tcp
+      STUN_URLS: stun:${DOMAIN}:${TURN_PORT}
+    networks:
+      - internal
+    logging:
+      options: { max-size: "10m", max-file: "3" }
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+      DOMAIN_ALIAS: ${DOMAIN_ALIAS}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+      - web
+    depends_on:
+      - relay
+    logging:
+      options: { max-size: "10m", max-file: "3" }
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_web
+      # port 80 : challenge ACME de Caddy (et redirection vers https)
+      - traefik.http.routers.sonicnet-http.rule=Host(`${DOMAIN}`,`${DOMAIN_ALIAS}`)
+      - traefik.http.routers.sonicnet-http.entrypoints=insecure
+      - traefik.http.routers.sonicnet-http.service=sonicnet-http
+      - traefik.http.services.sonicnet-http.loadbalancer.server.port=80
+      # port 443 : le TLS de ${DOMAIN} passe tel quel jusqu'à Caddy
+      - traefik.tcp.routers.sonicnet-tls.rule=HostSNI(`${DOMAIN}`,`${DOMAIN_ALIAS}`)
+      - traefik.tcp.routers.sonicnet-tls.entrypoints=secure
+      - traefik.tcp.routers.sonicnet-tls.tls.passthrough=true
+      - traefik.tcp.routers.sonicnet-tls.service=sonicnet-tls
+      - traefik.tcp.services.sonicnet-tls.loadbalancer.server.port=443
+
+  coturn:
+    image: coturn/coturn:4.6.2
+    restart: unless-stopped
+    network_mode: host
+    # relais vers les adresses privées interdit : un client TURN ne peut pas atteindre les services du VPS
+    command: >
+      -n --log-file=stdout --no-cli --fingerprint --no-multicast-peers
+      --listening-ip=${PRIVATE_IP} --relay-ip=${PRIVATE_IP} --external-ip=${PUBLIC_IP}/${PRIVATE_IP}
+      --listening-port=${TURN_PORT} --min-port=${TURN_MIN_PORT} --max-port=${TURN_MAX_PORT}
+      --no-tls --no-dtls
+      --realm=${DOMAIN} --use-auth-secret --static-auth-secret=${TURN_SECRET}
+      --total-quota=100 --user-quota=12 --max-bps=2000000
+      --denied-peer-ip=0.0.0.0-0.255.255.255 --denied-peer-ip=10.0.0.0-10.255.255.255
+      --denied-peer-ip=100.64.0.0-100.127.255.255 --denied-peer-ip=127.0.0.0-127.255.255.255
+      --denied-peer-ip=169.254.0.0-169.254.255.255 --denied-peer-ip=172.16.0.0-172.31.255.255
+      --denied-peer-ip=192.168.0.0-192.168.255.255
+    logging:
+      options: { max-size: "10m", max-file: "3" }
