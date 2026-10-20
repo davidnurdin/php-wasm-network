@@ -33,6 +33,9 @@ interface Connection
 
     public function leaveRoom(): void;
 
+    /** The host: what the list of public rooms shows of this one (GET /health?rooms on the server), 2 KB at most. */
+    public function setRoomInfo(array $info): void;
+
     /**
      * Sends $data to the peer $to (null: every other peer of the room).
      * $reliable false: may be lost or arrive out of order, never late (WebRTC; the relay is always reliable).

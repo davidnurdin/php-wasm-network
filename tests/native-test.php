@@ -116,6 +116,54 @@ $r5 = of(pump(['p2' => $p2], fn($ev) => of($ev['p2'], Event::ROOM))['p2'], Event
 check($r5['room'] === $r1['room'], 'unlocked: the fullest public room is joined first');
 foreach ($all as $conn) $conn->close();
 
+// watchers (a web page next to the game): ids from 128, never host, not in the broadcasts of the peers
+$w1 = new NativeConnection($url); $w2 = new NativeConnection($url); $g1 = new NativeConnection($url); $g2 = new NativeConnection($url);
+$all = compact('w1', 'w2', 'g1', 'g2');
+pump($all, fn($ev) => count(array_filter($ev, fn($e) => of($e, Event::OPEN))) === 4);
+$w1->watchRoom(null, 6, ['game' => 'w'], true);
+$rw = of(pump(['w1' => $w1], fn($ev) => of($ev['w1'], Event::ROOM))['w1'], Event::ROOM)[0]->info();
+check($rw['peer'] === 128 && $rw['host'] === -1 && $rw['watcher'] === true, "a watcher creates {$rw['room']}: #128, no host");
+$w1->setRoomInfo(['names' => [], 'mode' => 'race']);
+$w2->watchRoom($rw['room']);
+$g1->joinRoom($rw['room']);
+$ev = pump($all, fn($ev) => of($ev['g1'], Event::ROOM) && of($ev['w2'], Event::ROOM));
+$rg = of($ev['g1'], Event::ROOM)[0]->info();
+check($rg['peer'] === 0 && $rg['host'] === 0 && $rg['watchers'] === [128, 129], 'the first player of a watched room is #0 and the host, sees the watchers');
+$g2->joinRoom($rw['room']);
+pump($all, fn($ev) => of($ev['g2'], Event::ROOM));
+$g1->send('peers only');
+$g1->send('watchers only', 254);
+$w1->send('from a watcher');
+$ev = pump($all, fn($ev) => count(of($ev['w2'], Event::MESSAGE)) >= 2 && count(of($ev['g2'], Event::MESSAGE)) >= 2, 0.6);
+// two senders: no order between them
+$texts = function (string $k) use (&$ev) { $t = array_map(fn($e) => $e->from . ':' . $e->data, of($ev[$k], Event::MESSAGE)); sort($t); return $t; };
+check($texts('g2') === ['0:peers only', '128:from a watcher'], 'a peer gets the broadcasts of peers and watchers: ' . json_encode($texts('g2')));
+check($texts('w2') === ['0:watchers only', '128:from a watcher'], 'a watcher gets WATCHERS and the other watchers: ' . json_encode($texts('w2')));
+$list = json_decode((string)@file_get_contents("http://127.0.0.1:$port/health?rooms"), true);
+$listed = array_values(array_filter($list['list'] ?? [], fn($r) => $r['room'] === $rw['room']))[0] ?? null;
+check($listed !== null && $listed['players'] === 2 && $listed['watchers'] === 2 && $listed['info'] === ['names' => [], 'mode' => 'race'],
+    '/health?rooms lists the public room with its info: ' . json_encode($listed));
+$g1->setRoomInfo(['names' => ['A', 'B']]);
+$w2->setRoomInfo(['names' => ['hack']]);   // a watcher, the room has a host: ignored
+usleep(150000);
+$list = json_decode((string)@file_get_contents("http://127.0.0.1:$port/health?rooms"), true);
+$listed = array_values(array_filter($list['list'] ?? [], fn($r) => $r['room'] === $rw['room']))[0] ?? null;
+check(($listed['info'] ?? null) === ['names' => ['A', 'B']], 'info: the host sets it, a watcher can not');
+$w1->close();
+$ev = pump($all, fn($ev) => of($ev['g1'], Event::PEER_LEAVE));
+check((of($ev['g1'], Event::PEER_LEAVE)[0] ?? null)?->from === 128, 'a watcher leaving: peer-leave #128');
+$g1->close(); $g2->close();
+$ev = pump($all, fn($ev) => count(of($ev['w2'], Event::HOST)) >= 2);
+check((of($ev['w2'], Event::HOST)[1] ?? null)?->from === -1, 'no peer left: host -1');
+$w2->close();
+usleep(200000);
+$g3 = new NativeConnection($url);
+pump(['g3' => $g3], fn($ev) => of($ev['g3'], Event::OPEN));
+$g3->joinRoom($rw['room']);
+$ev = pump(['g3' => $g3], fn($ev) => of($ev['g3'], Event::ROOM) || of($ev['g3'], Event::ERROR));
+check((of($ev['g3'], Event::ROOM)[0] ?? null)?->info()['host'] === 0, 'an empty room is kept a moment: the game joins it and is the host');
+$g3->close();
+
 $b->close(); $c->close(); $d->close();
 proc_terminate($server);
 echo $failures ? "$failures FAILED\n" : "all passed\n";

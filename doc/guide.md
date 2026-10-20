@@ -235,7 +235,26 @@ de son rôle (dans Sonic, c'est lui qui fait autorité sur la partie).
 | `joinRoom(string $code)` | entre dans le salon `$code`. Erreurs possibles : `no-room`, `room-full` |
 | `quickJoin(int $max = 8, array $meta = [])` | **salon public** : entre dans le salon public qui a **le même `$meta`**, une place libre et le plus de joueurs, ou en crée un |
 | `lockRoom(bool $locked)` | l'hôte seulement : plus personne n'arrive par `quickJoin()`. Le code marche toujours |
+| `setRoomInfo(array $info)` | l'hôte seulement : ce que la liste des salons publics montre de ce salon (`GET /health?rooms`), 2 Ko au plus |
 | `leaveRoom()` | quitte le salon (la connexion reste ouverte) |
+
+#### Les spectateurs
+
+Un **spectateur** suit un salon sans y jouer : c'est par exemple une page web à côté du jeu, qui montre qui
+est là et la discussion. Il entre avec `watch {room}`, ou crée le salon avec `create {…, watch: true}`
+(`NativeConnection::watchRoom()` côté PHP natif ; une page web parle directement le protocole, voir la
+partie 8).
+
+- Les spectateurs ont des numéros à partir de **128** (`Protocol::FIRST_WATCHER`). Ils ne sont jamais
+  hôtes et ne comptent pas dans `max`.
+- Ils ne reçoivent pas ce qu'un pair envoie à tous (255) : en WebRTC, ces messages vont souvent de pair à
+  pair sans passer par le serveur. L'application leur envoie ce qui les concerne à l'adresse **254**
+  (`Protocol::WATCHERS`, tous les spectateurs), ou à l'un d'eux par son numéro.
+- Ce qu'un spectateur envoie à tous (255) arrive aux pairs **et** aux autres spectateurs.
+- Un salon sans pair a l'hôte `-1`. Le premier pair qui y entre devient l'hôte.
+- Un salon vide est gardé **90 secondes** : la page qui l'a créé peut ouvrir le jeu, qui le rejoint.
+- Les pairs ne voient arriver un spectateur que par `watcher-join` (ignoré par les bibliothèques). Son
+  départ arrive comme celui d'un pair (`PEER_LEAVE`, numéro ≥ 128).
 
 Conseil : mettez **une version** dans `$meta` (`['game' => 'sonic', 'v' => 3]`). `quickJoin()` ne réunit
 que des `$meta` identiques, donc deux versions incompatibles ne se retrouvent jamais ensemble. Avec un
@@ -477,7 +496,8 @@ cp .env.example .env
 sed -i "s/^TURN_SECRET=.*/TURN_SECRET=$(openssl rand -hex 32)/" .env
 # éditer DOMAIN et PUBLIC_IP
 docker compose up -d --build
-curl https://$DOMAIN/health        # {"ok":true,"rooms":0,"public":0,"clients":0}
+curl https://$DOMAIN/health        # {"ok":true,"rooms":0,"public":0,"clients":0,"players":0,"watchers":0}
+curl 'https://$DOMAIN/health?rooms' # en plus : "list", les salons publics (code, joueurs, spectateurs, info)
 ```
 
 - `relay` : le serveur PHP (image `php:8.3-cli-alpine`, utilisateur `nobody`) ;
@@ -518,8 +538,10 @@ Du client vers le serveur :
 
 | Message | Champs | Effet |
 |---|---|---|
-| `create` | `max`, `meta`, `public` | crée un salon et y entre |
+| `create` | `max`, `meta`, `public`, `watch` | crée un salon et y entre (en spectateur avec `watch`) |
 | `join` | `room` | entre dans un salon par son code |
+| `watch` | `room` | entre dans un salon en spectateur |
+| `info` | `data` | l'hôte (ou un spectateur s'il n'y a aucun pair) : ce que la liste des salons montre |
 | `quick` | `max`, `meta` | salon public (voir `quickJoin()`) |
 | `lock` | `locked` | l'hôte ferme ou rouvre son salon public |
 | `leave` | | quitte le salon |
@@ -531,9 +553,9 @@ Du serveur vers le client :
 | Message | Champs |
 |---|---|
 | `hello` | `v` (version du protocole), `ice` (serveurs STUN / TURN avec identifiants) |
-| `room` | `room`, `peer` (mon numéro), `host`, `peers` (les autres), `meta`, `max`, `public` |
-| `peer-join` / `peer-leave` | `peer` |
-| `host` | `peer` (le nouvel hôte) |
+| `room` | `room`, `peer` (mon numéro), `host` (-1 : aucun pair), `peers` (les autres pairs), `watchers`, `watcher` (suis-je spectateur), `meta`, `max`, `public` |
+| `peer-join` / `watcher-join` / `peer-leave` | `peer` (`peer-leave` : un pair ou un spectateur) |
+| `host` | `peer` (le nouvel hôte, -1 s'il ne reste aucun pair) |
 | `signal` | `from`, `data` |
 | `pong` | `id` |
 | `error` | `code` (`no-room`, `room-full`, `bad-message`…), `message` |
@@ -541,7 +563,7 @@ Du serveur vers le client :
 ### Trames binaires (messages relayés)
 
 ```
-client → serveur :  [destinataire : 1 octet, 255 = tous les autres] [données…]
+client → serveur :  [destinataire : 1 octet, 255 = tous les autres, 254 = les spectateurs] [données…]
 serveur → client :  [émetteur : 1 octet]                            [données…]
 ```
 

@@ -78,6 +78,18 @@ final class NativeConnection implements Connection
         $this->control(['t' => 'leave']);
     }
 
+    public function setRoomInfo(array $info): void
+    {
+        $this->control(['t' => 'info', 'data' => $info ?: new \stdClass()]);
+    }
+
+    /** Follows the room $code as a watcher (Protocol: watch), or creates one ($code null) to watch. */
+    public function watchRoom(?string $code, int $maxPeers = 8, array $meta = [], bool $public = false): void
+    {
+        $this->control($code !== null ? ['t' => 'watch', 'room' => $code]
+            : ['t' => 'create', 'max' => $maxPeers, 'meta' => $meta ?: new \stdClass(), 'public' => $public, 'watch' => true]);
+    }
+
     public function send(string $data, ?int $to = null, bool $reliable = true): bool
     {
         if ($this->state !== self::OPEN || strlen($data) > Protocol::MAX_MESSAGE) return false;

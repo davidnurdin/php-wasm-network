@@ -54,6 +54,11 @@ final class WasmConnection implements Connection
         \wasmnet_control($this->handle, json_encode(['t' => 'leave']));
     }
 
+    public function setRoomInfo(array $info): void
+    {
+        \wasmnet_control($this->handle, json_encode(['t' => 'info', 'data' => $info ?: new \stdClass()]));
+    }
+
     public function send(string $data, ?int $to = null, bool $reliable = true): bool
     {
         return \wasmnet_send($this->handle, $data, $to ?? Protocol::BROADCAST, $reliable);
