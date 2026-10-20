@@ -38,6 +38,9 @@
 	# le reste : le site (Symfony, et son hub Mercure sur /.well-known/mercure), avec l'adresse du visiteur
 	handle {
 		reverse_proxy site:8080 {
+			# while the site restarts (./update-site.sh), the request waits for it instead of a 502
+			lb_try_duration 30s
+			lb_try_interval 250ms
 			header_up X-Forwarded-For {client_ip}
 			# ici, toujours une page demandée en https
 			header_up X-Forwarded-Proto https
